@@ -1,0 +1,115 @@
+# Changes — Hindi/English bot + fixes (22 Oct 2026)
+
+## 1. Deploy steps (do these in order)
+
+1. **Database**: the 3 new `Bot` columns are now added automatically when the app starts
+   (src/prisma.service.ts). You can also add them by hand: `prisma/manual/2026-10-22-bot-language.sql`.
+2. **SESSION_SECRET**: make sure it is set on Render (32+ random characters, `openssl rand -hex 32`).
+   If it is already set, keep the same value (changing it unlinks WhatsApp numbers and clears saved API keys).
+   The app now refuses to start on Render / `NODE_ENV=production` without it.
+3. Deploy backend, then frontend.
+4. Check: `npm run build && npm run test:bot` → should print `ALL PASSED`.
+
+## 2. Hindi / English / Hinglish
+
+- **Auto language**: the bot answers in the customer's language —
+  `कीमत क्या है?` → Hindi, `price kitna hai?` → Hinglish, `What is the price?` → English.
+  A short message like "price?" follows the earlier chat's language.
+- **Bot → Settings → Reply language**: Auto / Always English / Always Hindi / Always Hinglish.
+- **Hindi welcome & fallback** fields. Left empty, the default fallback is translated automatically.
+- Greeting, fallback, STOP/START replies, and the "voice note / photo" reply come in all 3 languages.
+- AI prompt now tells the AI which language and script to reply in.
+
+## 3. Answers without an AI key (or when AI is down)
+
+The bot now answers from **Business info → Training data**:
+
+```
+Timings: 10 AM – 8 PM, Monday to Saturday
+Delivery charges: ₹50, free above ₹999
+
+Q: Delivery kitne din me hoti hai?
+A: Shahar me same day, baaki jagah 2–3 din.
+```
+
+It understands the same question in different words/languages
+("kab khulta hai" = "what time do you open" = "दुकान का समय"),
+plus the address / phone / website from Business info and product names from Products (price + stock).
+Shown as "Training data" in chats and in the Test tab.
+
+## 4. Bug fixes
+
+- **Messages were dropped**: if a customer wrote again while the bot was still replying (AI + typing ≈ 5–20 s),
+  that message never got an answer. Now it is answered right after.
+- **Security**: without SESSION_SECRET the app used a public development key — anyone could forge a login
+  (even Super Admin). Now blocked on live servers.
+- "ok thanks", "thank you so much sir", "theek hai ji" no longer get a fallback reply.
+- Voice notes / photos without text: polite "please type" reply (once per hour) + chat marked "needs you",
+  stickers ignored.
+- Hindi STOP/START words: `band karo`, `बंद करो`, `chalu karo`, `चालू करो` …
+- Anthropic request had no timeout (could hang a reply forever).
+- Bot test endpoint: history size capped (each test costs AI money); flow toggle body validated.
+- Bot settings page now shows an error when saving fails.
+- Frontend: removed unused duplicate files in the root (`api.ts`, `ui.tsx`, `page.tsx`, `tsconfig.tsbuildinfo`).
+
+## 5. ChatGPT-style replies + always online (22 Oct, update 2)
+
+- **Bot → Settings → "Answer every message (like ChatGPT)"** — ON by default. The AI now replies to everything
+  (greetings, "thanks", general questions, "Hindi me baat karo" …). Business facts still come only from your data.
+  Before, the AI was told to stay silent on anything not about the business — that is why some messages got no reply.
+  Turn it OFF for the old "business questions only" behaviour.
+- If the customer asks for a language ("Hindi me baat karo"), the AI keeps using it.
+- **Numbers → Manage → "Always show online"** — OFF by default, per number. Keeps the number "online" instead of
+  "last seen". Side effect: the phone may show fewer WhatsApp notifications while it is on.
+- New columns `Bot.alwaysReply` and `Account.alwaysOnline` are added automatically on startup.
+
+## 6. Fix: replies stopped after the first message (22 Oct, update 3)
+
+- **Cause**: WhatsApp encryption keys were read from the database before the previous update was saved, so the
+  next incoming message could not be decrypted ("Failed to decrypt", "Over 2000 messages into the future") and never
+  reached the bot (grey ticks, no reply). Fixed: reads wait for pending writes + Baileys' in-memory key cache.
+- Customers asking to re-send an undecryptable reply now get it (no more "Waiting for this message").
+- Faster: wait for follow-up messages 2 s (was 3), "typing…" max 2.5 s (was 4), OpenAI timeout 15 s (was 20).
+- After deploying: Numbers → Unlink, then Link again with a fresh QR once, to start with clean encryption sessions.
+- Faster feel: "typing…" shows the moment a message arrives, while the AI thinks; the reply then goes out
+  without an extra typing pause. Wait for follow-up messages: 1.5 s.
+
+## 7. Clear logs for every "no reply" (22 Oct, update 4)
+
+- Every time the bot stays silent the log says why: `No reply to +91…: <reason>` (bot off, chat paused by a person,
+  plan used up, hourly limit, fallback already sent, AI said nothing …).
+- `/api/health` now shows `build` (which code is running) and `ai` (which AI provider has a key).
+- OpenAI: models without "reasoning" (gpt-4o-mini, gpt-4.1-mini) skip the reasoning setting → first reply faster.
+
+## 8. WhatsApp library upgraded to Baileys 7 (22 Oct, update 5)
+
+- Baileys 6.7.24 is now marked "legacy". WhatsApp has moved many chats to private "LID" addresses (…@lid),
+  which 6.x can't always decrypt → some messages never reached the bot (grey ticks). Upgraded to 7.0.0-rc14.
+- Contacts are saved by real phone number when WhatsApp provides it (no more "+2203…@lid").
+- Node 22 is required (`engines` in package.json + `.node-version`; Render picks it up automatically).
+- After deploying: Numbers → Manage → Unlink phone, then Link and scan a new QR once.
+
+## 9. Answer every message in a burst (22 Oct, update 6)
+
+- Several messages in a row ("Egg bhi hai?" + "Sabji me kya hai?") now get ONE reply that answers all of them.
+- "Answer everything" mode never goes silent: if the AI returns an empty reply it is asked again once,
+  then the fallback text is sent.
+- Requests to write something (letter, message) are written right away.
+
+## 10. Safety net: no customer message left unanswered (22 Oct, update 7)
+
+- Every 30 s the server looks for customer messages from the last 15 minutes that are still waiting
+  (server restarted during the short wait, a reply failed …) and answers them. Each message is retried once.
+  Log line: `Safety net: answering a waiting message …`.
+
+## 11. General knowledge (10 Nov)
+
+- In "answer everything" mode the AI answers general questions (places, people, studies, facts) from its own
+  knowledge instead of saying it doesn't know. Business facts still come only from your data.
+
+## 12. VPS ready (10 Nov)
+
+- `deploy/` folder: `vps-setup.sh` (Node 22 + PM2 + build + start), `proxy-setup.sh` (https for api.saschatbot.com,
+  cPanel/Apache or Nginx + free SSL, WebSocket support), `update.sh`, `ecosystem.config.js`, `env.vps.example`.
+  Step-by-step guide in Hindi/English: `deploy/VPS-SETUP.md`.
+- New `HOST` setting: `HOST=127.0.0.1` keeps port 4100 private on a VPS.
